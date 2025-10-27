@@ -14,14 +14,14 @@ async function processUpload(req, res) {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
-    console.log('📄 Processing PDF:', req.file.originalname);
+    console.log(' Processing PDF:', req.file.originalname);
     // Step 1: Extract text from PDF
     const filePath = req.file.path;
     const text = await extractTextFromPDF(filePath);
-    console.log('✅ Text extracted, length:', text.length);
+    console.log(' Text extracted, length:', text.length);
     // Step 2: Process the document
     const processedData = processFullDocument(text);
-    console.log('✅ Document processed');
+    console.log(' Document processed');
     console.log('   Date:', processedData.date);
     console.log('   Commodities found:', processedData.commodities.length);
     // Step 3: Save to database
@@ -74,11 +74,11 @@ async function processUpload(req, res) {
         // Continue with next commodity
       }
     };
-    console.log('✅ Saved to database:', summary.saved, 'commodities');
-    console.log('📊 Price changes detected:', summary.priceChanges.length);
+    console.log(' Saved to database:', summary.saved, 'commodities');
+    console.log(' Price changes detected:', summary.priceChanges.length);
     // Step 4: Delete temporary PDF file
     fs.unlinkSync(filePath);
-    console.log('🗑️  Temporary file deleted');
+    console.log('  Temporary file deleted');
   // Step 5: Send success response
     res.status(200).json({
       success: true,
