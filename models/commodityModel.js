@@ -45,7 +45,7 @@ async function getCategoryIdByName(categoryName) {
       }
     }
     
-    console.warn('⚠️  No category match found for:', categoryName);
+    console.warn('  No category match found for:', categoryName);
     return null;
   } catch (error) {
     console.error('Error getting category ID:', error);
@@ -54,37 +54,45 @@ async function getCategoryIdByName(categoryName) {
 }
 
 async function findOrCreateCommodity(commodityData) {
-    try {
+  try {
     // First, try to find existing commodity
+    // IMPORTANT: Include category_id in the search to allow same name in different categories
     const findQuery = `
       SELECT id FROM commodities 
-      WHERE name = $1 AND specification = $2
+      WHERE name = $1 AND specification = $2 AND category_id = $3
     `;
+    
     const findResult = await pool.query(findQuery, [
       commodityData.name, 
-      commodityData.specification
+      commodityData.specification,
+      commodityData.category_id
     ]);
+    
+    // If exists, return its ID
     if (findResult.rows.length > 0) {
-      // Commodity exists, return its ID
       return findResult.rows[0].id;
     }
+    
+    // If not exists, create new commodity
     const insertQuery = `
       INSERT INTO commodities (name, specification, category_id, unit)
       VALUES ($1, $2, $3, $4)
       RETURNING id
     `;
+    
     const insertResult = await pool.query(insertQuery, [
-        commodityData.name,
+      commodityData.name,
       commodityData.specification,
       commodityData.category_id,
       commodityData.unit
     ]);
+    
     return insertResult.rows[0].id;
   } catch (error) {
-    console.error('Error in findOrCreateCommodity:', error);
+    console.error('Error finding/creating commodity:', error);
     throw error;
-  } 
-};
+  }
+}
 
 async function insertPriceHistory(commodityId, price, date) {
   try {
@@ -148,10 +156,228 @@ async function checkPriceChange(commodityId, newPrice, date, threshold = 5) {
     throw error;
   }
 }
+// Get all commodities with optional filters
+async function getAllCommodities(filters = {}) {
+  try {
+    let query = `
+      SELECT 
+        co.id,
+        co.name,
+        co.specification,
+        co.unit,
+        c.name as category_name,
+        c.type as market_type,
+        ph.price as latest_price,
+        ph.date as price_date
+      FROM commodities co
+      JOIN categories c ON co.category_id = c.id
+      LEFT JOIN LATERAL (
+        SELECT price, date
+        FROM price_history
+        WHERE commodity_id = co.id
+        ORDER BY date DESC
+        LIMIT 1
+      ) ph ON true
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    let paramCount = 1;
+    
+    // Filter by category
+    if (filters.category_id) {
+      query += ` AND co.category_id = $${paramCount}`;
+      params.push(filters.category_id);
+      paramCount++;
+    }
+    
+    // Filter by market type (wet/dry)
+    if (filters.market_type) {
+      query += ` AND c.type = $${paramCount}`;
+      params.push(filters.market_type);
+      paramCount++;
+    }
+    
+    // Search by name
+    if (filters.search) {
+      query += ` AND co.name ILIKE $${paramCount}`;
+      params.push(`%${filters.search}%`);
+      paramCount++;
+    }
+    
+    query += ` ORDER BY co.name`;
+    
+    // Pagination
+    if (filters.limit) {
+      query += ` LIMIT $${paramCount}`;
+      params.push(filters.limit);
+      paramCount++;
+    }
+    
+    if (filters.offset) {
+      query += ` OFFSET $${paramCount}`;
+      params.push(filters.offset);
+    }
+    
+    const result = await pool.query(query, params);
+    return result.rows;
+  } catch (error) {
+    console.error('Error getting all commodities:', error);
+    throw error;
+  }
+}
 
+// Get single commodity with details
+async function getCommodityById(id) {
+  try {
+    const query = `
+      SELECT 
+        co.id,
+        co.name,
+        co.specification,
+        co.unit,
+        c.name as category_name,
+        c.type as market_type,
+        ph.price as latest_price,
+        ph.date as price_date
+      FROM commodities co
+      JOIN categories c ON co.category_id = c.id
+      LEFT JOIN LATERAL (
+        SELECT price, date
+        FROM price_history
+        WHERE commodity_id = co.id
+        ORDER BY date DESC
+        LIMIT 1
+      ) ph ON true
+      WHERE co.id = $1
+    `;
+    
+    const result = await pool.query(query, [id]);
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error('Error getting commodity by ID:', error);
+    throw error;
+  }
+}
+
+// Get price history for a commodity
+async function getPriceHistory(commodityId, days = 30) {
+  try {
+    const query = `
+      SELECT 
+        date,
+        price,
+        source
+      FROM price_history
+      WHERE commodity_id = $1
+        AND date >= CURRENT_DATE - INTERVAL '${days} days'
+      ORDER BY date DESC
+    `;
+    
+    const result = await pool.query(query, [commodityId]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error getting price history:', error);
+    throw error;
+  }
+}
+
+// Get recent price changes
+async function getRecentPriceChanges(days = 7, minPercentage = 5) {
+  try {
+    const query = `
+      SELECT 
+        pc.id,
+        co.name as commodity_name,
+        co.specification,
+        c.name as category_name,
+        pc.old_price,
+        pc.new_price,
+        pc.change_amount,
+        pc.change_percentage,
+        pc.change_date,
+        pc.is_increase
+      FROM price_changes pc
+      JOIN commodities co ON pc.commodity_id = co.id
+      JOIN categories c ON co.category_id = c.id
+      WHERE pc.change_date >= CURRENT_DATE - INTERVAL '${days} days'
+        AND ABS(pc.change_percentage) >= $1
+      ORDER BY pc.change_date DESC, ABS(pc.change_percentage) DESC
+      LIMIT 50
+    `;
+    
+    const result = await pool.query(query, [minPercentage]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error getting price changes:', error);
+    throw error;
+  }
+}
+
+// Get all categories
+async function getAllCategories() {
+  try {
+    const query = `
+      SELECT 
+        c.id,
+        c.name,
+        c.type,
+        COUNT(co.id) as commodity_count
+      FROM categories c
+      LEFT JOIN commodities co ON c.id = co.category_id
+      GROUP BY c.id, c.name, c.type
+      ORDER BY c.name
+    `;
+    
+    const result = await pool.query(query);
+    return result.rows;
+  } catch (error) {
+    console.error('Error getting categories:', error);
+    throw error;
+  }
+}
+
+// Search commodities
+async function searchCommodities(searchQuery) {
+  try {
+    const query = `
+      SELECT 
+        co.id,
+        co.name,
+        co.specification,
+        c.name as category_name,
+        ph.price as latest_price,
+        ph.date as price_date
+      FROM commodities co
+      JOIN categories c ON co.category_id = c.id
+      LEFT JOIN LATERAL (
+        SELECT price, date
+        FROM price_history
+        WHERE commodity_id = co.id
+        ORDER BY date DESC
+        LIMIT 1
+      ) ph ON true
+      WHERE co.name ILIKE $1 OR co.specification ILIKE $1
+      ORDER BY co.name
+      LIMIT 20
+    `;
+    
+    const result = await pool.query(query, [`%${searchQuery}%`]);
+    return result.rows;
+  } catch (error) {
+    console.error('Error searching commodities:', error);
+    throw error;
+  }
+}
 module.exports = {
   getCategoryIdByName,
   findOrCreateCommodity,
   insertPriceHistory,
-  checkPriceChange
+  checkPriceChange,
+  getAllCommodities,
+  getCommodityById,
+  getPriceHistory,
+  getRecentPriceChanges,
+  getAllCategories,
+  searchCommodities
 };
